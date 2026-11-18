@@ -1,0 +1,10 @@
+{
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
+    "capacitor-thermal-printer": "^0.2.5"
+  }
+}

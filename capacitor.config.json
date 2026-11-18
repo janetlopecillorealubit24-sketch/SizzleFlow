@@ -1,0 +1,9 @@
+{
+  "appId": "com.sipandsizzle.sizzleflow",
+  "appName": "SizzleFlow",
+  "webDir": "app",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  }
+}
