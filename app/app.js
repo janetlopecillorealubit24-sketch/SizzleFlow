@@ -125,7 +125,7 @@ function render(){ S.user ? renderMain() : renderLogin(); }
 function renderLogin(mode='login'){
   const signup = mode === 'signup';
   $('#app').innerHTML = `
-  <div class="login-page"><div class="login card"><img class="login-logo" src="images/logo-transparent.png?v=2" alt="Sip &amp; Sizzle logo">
+  <div class="login-page"><div class="login card"><img class="login-logo" src="images/logo-transparent.png?v=3" alt="Sip &amp; Sizzle logo" onerror="this.onerror=null;this.src='images/logo.jpg?v=3'">
     <p class="muted auth-subtitle">${signup?'Create your SizzleFlow account':'SizzleFlow sales system'}</p>
     ${signup?'<input id="fullName" placeholder="Full name" autocomplete="name" autofocus>':''}
     <input id="u" type="email" placeholder="Email" autocapitalize="none" autocomplete="email" ${signup?'':'autofocus'}>
@@ -239,7 +239,7 @@ const NAV_ICONS = {
 };
 function renderMain(){
   $('#app').innerHTML = `
-  <header class="app-header"><img class="brand-mark" src="images/logo-transparent.png?v=2" alt="Sip &amp; Sizzle"><div class="header-user"><button class="profile-trigger" id="profileToggle" aria-label="Open profile menu" aria-expanded="false">${avatarHtml(S.user)}</button><div class="profile-dropdown" id="profileDropdown"><div class="profile-summary"><b>${esc(S.user.full_name)}</b><span>${esc(S.user.username)} - ${esc(S.user.role)}</span></div><button class="profile-option" data-profile>Profile</button><button class="profile-option" data-settings>Settings</button><button class="profile-option logout-option" data-logout>Log out</button></div></div></header>
+  <header class="app-header"><img class="brand-mark" src="images/logo-transparent.png?v=3" alt="Sip &amp; Sizzle" onerror="this.onerror=null;this.src='images/logo.jpg?v=3'"><div class="header-user"><button class="profile-trigger" id="profileToggle" aria-label="Open profile menu" aria-expanded="false">${avatarHtml(S.user)}</button><div class="profile-dropdown" id="profileDropdown"><div class="profile-summary"><b>${esc(S.user.full_name)}</b><span>${esc(S.user.username)} - ${esc(S.user.role)}</span></div><button class="profile-option" data-profile>Profile</button><button class="profile-option" data-settings>Settings</button><button class="profile-option logout-option" data-logout>Log out</button></div></div></header>
   <main id="view"></main>
   <nav class="bottom-nav" aria-label="Main navigation">${TABS.map(([k,l])=>`<button class="bottom-nav-item ${S.tab===k?'on':''}" data-t="${k}" aria-label="${l}" aria-current="${S.tab===k?'page':'false'}">${NAV_ICONS[k]}<span>${l==='New Sale'?'Sale':l}</span></button>`).join('')}</nav>`;
   document.querySelectorAll('.bottom-nav-item').forEach(b=>b.onclick=()=>{S.tab=b.dataset.t; renderMain();});
