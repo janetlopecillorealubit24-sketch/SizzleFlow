@@ -32,7 +32,7 @@ const GOOGLE_CLIENT_ID = '531466811982-a9llaigspe91paod25s9em9oi9uuk9e4.apps.goo
 
 /* ---------- settings ---------- */
 const cfg = {
-  get url(){ return localStorage.getItem('sf_url') || 'http://192.168.1.100/SizzleFlow/api'; },
+  get url(){ return localStorage.getItem('sf_url') || window.SIZZLEFLOW_API_URL || new URL('../api', location.href).href.replace(/\/+$/,''); },
   set url(v){ localStorage.setItem('sf_url', v.replace(/\/+$/,'')); },
   get key(){ return localStorage.getItem('sf_key') || 'change-this-secret-key'; },
   set key(v){ localStorage.setItem('sf_key', v); },
@@ -76,7 +76,7 @@ function render(){ S.user ? renderMain() : renderLogin(); }
 function renderLogin(mode='login'){
   const signup = mode === 'signup';
   $('#app').innerHTML = `
-  <div class="login-page"><div class="login card"><img class="login-logo" src="../images/logo-transparent.png" alt="Sip &amp; Sizzle logo">
+  <div class="login-page"><div class="login card"><img class="login-logo" src="../images/logo-transparent.png?v=2" alt="Sip &amp; Sizzle logo">
     <p class="muted auth-subtitle">${signup?'Create your SizzleFlow account':'SizzleFlow sales system'}</p>
     ${signup?'<input id="fullName" placeholder="Full name" autocomplete="name" autofocus>':''}
     <input id="u" type="email" placeholder="Email" autocapitalize="none" autocomplete="email" ${signup?'':'autofocus'}>
@@ -145,7 +145,7 @@ const NAV_ICONS = {
 };
 function renderMain(){
   $('#app').innerHTML = `
-  <header class="app-header"><img class="brand-mark" src="../images/logo-transparent.png" alt="Sip &amp; Sizzle"><div class="header-user"><button class="profile-trigger" id="profileToggle" aria-label="Open profile menu" aria-expanded="false">${avatarHtml(S.user)}</button><div class="profile-dropdown" id="profileDropdown"><div class="profile-summary"><b>${esc(S.user.full_name)}</b><span>${esc(S.user.username)} - ${esc(S.user.role)}</span></div><button class="profile-option" data-profile>Profile</button><button class="profile-option" data-settings>Settings</button><button class="profile-option logout-option" data-logout>Log out</button></div></div></header>
+  <header class="app-header"><img class="brand-mark" src="../images/logo-transparent.png?v=2" alt="Sip &amp; Sizzle"><div class="header-user"><button class="profile-trigger" id="profileToggle" aria-label="Open profile menu" aria-expanded="false">${avatarHtml(S.user)}</button><div class="profile-dropdown" id="profileDropdown"><div class="profile-summary"><b>${esc(S.user.full_name)}</b><span>${esc(S.user.username)} - ${esc(S.user.role)}</span></div><button class="profile-option" data-profile>Profile</button><button class="profile-option" data-settings>Settings</button><button class="profile-option logout-option" data-logout>Log out</button></div></div></header>
   <main id="view"></main>
   <nav class="bottom-nav" aria-label="Main navigation">${TABS.map(([k,l])=>`<button class="bottom-nav-item ${S.tab===k?'on':''}" data-t="${k}" aria-label="${l}" aria-current="${S.tab===k?'page':'false'}">${NAV_ICONS[k]}<span>${l==='New Sale'?'Sale':l}</span></button>`).join('')}</nav>`;
   document.querySelectorAll('.bottom-nav-item').forEach(b=>b.onclick=()=>{S.tab=b.dataset.t; renderMain();});
@@ -475,7 +475,7 @@ async function renderSet(){
   const ps = (await all('sales')).filter(s=>s.sync_status==='pending').length, pe = (await all('expenses')).filter(e=>e.sync_status==='pending').length;
   $('#view').innerHTML = `<div class="card settings-report-card"><h3 style="margin-top:0">Reports</h3><p class="muted">Review sales, expenses, and net income for a selected date range.</p><button class="btn" id="openReport">Open reports</button></div>
     <div class="card"><h3 style="margin-top:0">Server</h3>
-    <input id="su" value="${esc(cfg.url)}" placeholder="http://localhost/SizzleFlow/api"><input id="sk" value="${esc(cfg.key)}" placeholder="API key">
+    <input id="su" value="${esc(cfg.url)}" placeholder="https://api.your-domain.com/SizzleFlow/api"><input id="sk" value="${esc(cfg.key)}" placeholder="API key">
     <button class="btn alt" id="save">Save</button> <div class="muted" style="margin:6px 0">${ps} sale(s) and ${pe} expense(s) waiting to sync.</div>
     <button class="btn alt" id="test">Test server</button><button class="btn" id="sync" style="margin-top:6px">Sync now</button>
     <div id="smsg" class="muted" style="margin-top:8px"></div></div>
@@ -504,9 +504,10 @@ async function renderSet(){
   $('#tp').onclick = () => printReceipt({receipt_no:'TEST-001',sale_date:ymdhms(new Date()),cashier:S.user.full_name,payment_method:'Cash',total_amount:100,items:[{name:'Test item',quantity:2,unit_price:50,subtotal:100}]});
 }
 const hdrs = () => ({'Content-Type':'application/json','X-API-KEY':cfg.key});
-async function apiPing(){ try { return (await fetch(cfg.url+'/ping.php',{headers:hdrs()})).ok; } catch { return false; } }
+async function apiPing(){ if (!cfg.url) return false; try { return (await fetch(cfg.url+'/ping.php',{headers:hdrs()})).ok; } catch { return false; } }
 async function apiCall(file, opt={}){
-  let r; try { r = await fetch(cfg.url+'/'+file,{headers:hdrs(),...opt}); } catch { throw new Error('Cannot reach the server. Check the address and that Apache is running.'); }
+  if (!cfg.url) throw new Error('Cloud server is not configured. Set SIZZLEFLOW_API_URL in runtime-config.js.');
+  let r; try { r = await fetch(cfg.url+'/'+file,{headers:hdrs(),...opt}); } catch { throw new Error('Cannot reach the cloud server. Check your internet connection.'); }
   if (r.status===401) throw new Error('API key rejected. Make sure it matches API_KEY in config.php.');
   if (!r.ok) throw new Error('Server error ' + r.status);
   return r.json();

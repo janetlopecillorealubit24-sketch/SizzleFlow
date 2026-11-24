@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/supabase.php';
 require_key();
 
 $input = json_decode(file_get_contents('php://input'), true) ?: [];
@@ -13,7 +14,6 @@ foreach (($http_response_header ?? []) as $header) {
     if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $match)) { $status = (int)$match[1]; break; }
 }
 $claims = json_decode($raw ?: '', true);
-
 if ($status !== 200 || !is_array($claims)
     || ($claims['aud'] ?? '') !== GOOGLE_CLIENT_ID
     || !in_array(($claims['iss'] ?? ''), ['accounts.google.com', 'https://accounts.google.com'], true)
@@ -22,35 +22,32 @@ if ($status !== 200 || !is_array($claims)
     json_out(['error' => 'Google credential could not be verified.'], 401);
 }
 
-$pdo = pdo();
 $googleSub = (string)$claims['sub'];
 $email = strtolower(trim((string)($claims['email'] ?? '')));
 $name = trim((string)($claims['name'] ?? $email));
-$stmt = $pdo->prepare('SELECT id, full_name, username, password_hash, role, is_active, email, google_sub, auth_provider FROM users WHERE google_sub = :sub OR (email = :email AND email <> \'\') LIMIT 1');
-$stmt->execute([':sub' => $googleSub, ':email' => $email]);
-$user = $stmt->fetch();
+$select = 'id,full_name,username,password_hash,role,is_active,email,google_sub,auth_provider';
+$rows = supabase_query('users', ['google_sub' => 'eq.' . $googleSub, 'select' => $select, 'limit' => '1']);
+if (!$rows) $rows = supabase_query('users', ['email' => 'eq.' . $email, 'select' => $select, 'limit' => '1']);
+$user = $rows[0] ?? null;
 
 if (!$user) {
     $base = preg_replace('/[^a-z0-9_-]/', '', strtolower((string)strstr($email, '@', true))) ?: 'user';
     $base = substr($base, 0, 42);
-    $username = $base;
-    $n = 1;
-    while (true) {
-        $check = $pdo->prepare('SELECT 1 FROM users WHERE username = :username LIMIT 1');
-        $check->execute([':username' => $username]);
-        if (!$check->fetchColumn()) break;
-        $username = substr($base, 0, 42) . $n++;
-    }
+    $username = $base; $n = 1;
+    while (supabase_query('users', ['username' => 'eq.' . $username, 'select' => 'id', 'limit' => '1'])) $username = substr($base, 0, 42) . $n++;
     $id = sprintf('%04x%04x-%04x-%04x-%04x-%04x%04x%04x', random_int(0,65535), random_int(0,65535), random_int(0,65535), random_int(16384,20479), random_int(32768,49151), random_int(0,65535), random_int(0,65535), random_int(0,65535));
-    $insert = $pdo->prepare("INSERT INTO users (id, full_name, username, password_hash, role, is_active, email, google_sub, auth_provider) VALUES (:id, :name, :username, :password_hash, 'staff', 1, :email, :sub, 'google')");
-    $insert->execute([':id'=>$id, ':name'=>$name ?: $username, ':username'=>$username, ':password_hash'=>bin2hex(random_bytes(32)), ':email'=>$email, ':sub'=>$googleSub]);
-    $stmt = $pdo->prepare('SELECT id, full_name, username, password_hash, role, is_active, email, google_sub, auth_provider FROM users WHERE id = :id');
-    $stmt->execute([':id'=>$id]);
-    $user = $stmt->fetch();
+    $created = supabase_upsert('users', [[
+        'id'=>$id, 'full_name'=>$name ?: $username, 'username'=>$username,
+        'password_hash'=>bin2hex(random_bytes(32)), 'role'=>'staff', 'is_active'=>true,
+        'email'=>$email, 'google_sub'=>$googleSub, 'auth_provider'=>'google'
+    ]]);
+    $user = $created[0] ?? null;
 } else {
-    $update = $pdo->prepare("UPDATE users SET google_sub = :sub, email = :email, auth_provider = 'google', full_name = :name WHERE id = :id");
-    $update->execute([':sub'=>$googleSub, ':email'=>$email, ':name'=>$name ?: $user['full_name'], ':id'=>$user['id']]);
+    supabase_request('users', 'PATCH', 'id=eq.' . rawurlencode($user['id']), [[
+        'google_sub'=>$googleSub, 'email'=>$email, 'auth_provider'=>'google', 'full_name'=>$name ?: $user['full_name']
+    ]], 'return=minimal');
     $user['google_sub'] = $googleSub; $user['email'] = $email; $user['auth_provider'] = 'google'; $user['full_name'] = $name ?: $user['full_name'];
 }
 
+if (!$user) json_out(['error' => 'Could not create or update the Supabase user.'], 502);
 json_out(['user' => $user]);

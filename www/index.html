@@ -5,15 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>SizzleFlow</title>
 <link rel="manifest" href="manifest.json">
-<link rel="icon" href="icon.svg">
+<link rel="icon" href="images/app-icon.png" type="image/png">
 <meta name="theme-color" content="#176247">
 <link rel="stylesheet" href="style.css">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
+<div id="splash-screen" class="splash-screen" role="status" aria-label="Loading SizzleFlow">
+  <div class="splash-content">
+    <img class="splash-logo" src="images/logo-transparent.png?v=2" alt="Sip &amp; Sizzle">
+    <div class="splash-loader" aria-hidden="true"><span></span><span></span><span></span></div>
+  </div>
+</div>
 <div id="app"></div>
 <div id="receipt" class="print-only"></div>
 <script src="db.js"></script>
+<script src="runtime-config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

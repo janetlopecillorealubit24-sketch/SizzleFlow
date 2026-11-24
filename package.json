@@ -4,7 +4,9 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
     "@capacitor/core": "^8.6.2",
+    "@capgo/capacitor-social-login": "^8.7.13",
     "capacitor-thermal-printer": "^0.2.5"
   }
 }

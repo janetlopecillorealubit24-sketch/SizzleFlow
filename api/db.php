@@ -3,6 +3,12 @@ require_once __DIR__ . '/config.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
+// Allow the Android app (which runs from http://localhost) to call this server.
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Headers: Content-Type, X-API-KEY');
+header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') { http_response_code(204); exit; }
+
 function json_out($data, int $code = 200): void {
     http_response_code($code);
     echo json_encode($data);
@@ -21,10 +27,14 @@ function pdo(): PDO {
     static $pdo = null;
     if ($pdo === null) {
         $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
-        $pdo = new PDO($dsn, DB_USER, DB_PASS, [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
+        try {
+            $pdo = new PDO($dsn, DB_USER, DB_PASS, [
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            ]);
+        } catch (Throwable $ex) {
+            json_out(['error' => 'Database unavailable. Start MySQL in XAMPP and confirm the configured host/port.'], 503);
+        }
         // Keep existing XAMPP installations compatible with variation-aware menu records.
         foreach ([
             'ALTER TABLE products ADD COLUMN options_json TEXT NULL',

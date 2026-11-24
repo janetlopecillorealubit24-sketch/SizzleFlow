@@ -27,12 +27,13 @@ const S = { user:null, tab:'sale', saleView:'catalog', menuView:'products', menu
   from:ymd(new Date(new Date().getFullYear(), new Date().getMonth(), 1)), to:ymd(new Date()), hdate:ymd(new Date()) };
 const OFFICIAL_CATALOG_VERSION = 'sip-sizzle-official-v1';
 const GOOGLE_CLIENT_ID = '531466811982-a9llaigspe91paod25s9em9oi9uuk9e4.apps.googleusercontent.com';
-
 const isNative = () => !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
 
 /* ---------- settings ---------- */
 const cfg = {
-  get url(){ return localStorage.getItem('sf_url') || new URL('../api', location.href).href.replace(/\/+$/,''); },
+  // Native builds must use the public HTTPS API configured in runtime-config.js.
+  // Browser builds can continue using the local API when opened from XAMPP.
+  get url(){ return localStorage.getItem('sf_url') || window.SIZZLEFLOW_API_URL || (isNative() ? '' : new URL('../api', location.href).href.replace(/\/+$/,'')); },
   set url(v){ localStorage.setItem('sf_url', v.replace(/\/+$/,'')); },
   get key(){ return localStorage.getItem('sf_key') || 'change-this-secret-key'; },
   set key(v){ localStorage.setItem('sf_key', v); },
@@ -68,11 +69,20 @@ async function installOfficialCatalog(){
   localStorage.setItem('sf_catalog_version',OFFICIAL_CATALOG_VERSION);
 }
 async function init(){
-  await openDB(); await installOfficialCatalog(); await loadCatalog();
-  const saved = sessionStorage.getItem('sf_user');
-  if (saved) { S.user = JSON.parse(saved); S.tab = 'dash'; }
-  render();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+  const splashStarted = performance.now();
+  try {
+    await openDB(); await installOfficialCatalog(); await loadCatalog();
+    const saved = sessionStorage.getItem('sf_user');
+    if (saved) { S.user = JSON.parse(saved); S.tab = 'dash'; }
+    render();
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+  } finally {
+    const splash = document.querySelector('#splash-screen');
+    if (splash) {
+      const showTime = performance.now() - splashStarted;
+      setTimeout(() => { splash.classList.add('is-hidden'); setTimeout(() => splash.remove(), 450); }, Math.max(0, 3000 - showTime));
+    }
+  }
 }
 function render(){ S.user ? renderMain() : renderLogin(); }
 
@@ -80,7 +90,7 @@ function render(){ S.user ? renderMain() : renderLogin(); }
 function renderLogin(mode='login'){
   const signup = mode === 'signup';
   $('#app').innerHTML = `
-  <div class="login-page"><div class="login card"><img class="login-logo" src="images/logo-transparent.png" alt="Sip &amp; Sizzle logo">
+  <div class="login-page"><div class="login card"><img class="login-logo" src="images/logo-transparent.png?v=2" alt="Sip &amp; Sizzle logo">
     <p class="muted auth-subtitle">${signup?'Create your SizzleFlow account':'SizzleFlow sales system'}</p>
     ${signup?'<input id="fullName" placeholder="Full name" autocomplete="name" autofocus>':''}
     <input id="u" type="email" placeholder="Email" autocapitalize="none" autocomplete="email" ${signup?'':'autofocus'}>
@@ -121,20 +131,62 @@ function renderLogin(mode='login'){
 function setupGoogleAuth(signup){
   const mount = $('#googleButton');
   if (!mount) return;
+  if (isNative()) {
+    mount.innerHTML = '<button class="btn alt" id="nativeGoogleButton" type="button" style="width:100%">Continue with Google</button>';
+    $('#nativeGoogleButton').onclick = async () => {
+      const button = $('#nativeGoogleButton');
+      button.disabled = true; $('#err').textContent = 'Opening Google…';
+      try {
+        const socialLogin = window.Capacitor?.Plugins?.SocialLogin;
+        if (!socialLogin) throw new Error('Google sign-in plugin is not available. Rebuild the Android app after syncing Capacitor.');
+        await socialLogin.initialize({google:{webClientId:GOOGLE_CLIENT_ID,mode:'online',skipAuthOnlyAuthorizationAfterSignIn:true}});
+        const result = await Promise.race([
+          socialLogin.login({provider:'google'}),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Google sign-in timed out. Check the Android OAuth client, package name, and SHA-1.')), 20000))
+        ]);
+        const credential = result?.result?.idToken;
+        if (!credential) throw new Error('Google did not return an ID token.');
+        await finishGoogleLogin(credential);
+      } catch (e) {
+        $('#err').textContent = /cancel/i.test(e.message||'') ? '' : (e.message || 'Google sign-in failed.');
+        button.disabled = false;
+      }
+    };
+    return;
+  }
   const wait = () => {
     if (!window.google?.accounts?.id) { setTimeout(wait, 100); return; }
     google.accounts.id.initialize({client_id:GOOGLE_CLIENT_ID, callback:async response=>{
       $('#err').textContent = 'Signing in with Google…';
-      try {
-        const res = await fetch(cfg.url+'/google_auth.php',{method:'POST',headers:hdrs(),body:JSON.stringify({credential:response.credential})});
-        const data = await res.json();
-        if (!res.ok || !data.user) throw new Error(data.error||'Google sign-in failed.');
-        await put('users',data.user); S.user=data.user; S.tab='dash'; sessionStorage.setItem('sf_user',JSON.stringify(data.user)); render();
-      } catch (e) { $('#err').textContent = e.message || 'Google sign-in failed.'; }
+      try { await finishGoogleLogin(response.credential); }
+      catch (e) { $('#err').textContent = e.message || 'Google sign-in failed.'; }
     }});
     google.accounts.id.renderButton(mount,{theme:'outline',size:'large',width:320,text:signup?'signup_with':'signin_with',shape:'rectangular'});
   };
   wait();
+}
+
+async function finishGoogleLogin(credential){
+  if (!cfg.url) throw new Error('Google account selected, but no cloud server is configured. Set SIZZLEFLOW_API_URL in runtime-config.js and rebuild the app.');
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(cfg.url+'/google_auth.php',{method:'POST',headers:hdrs(),body:JSON.stringify({credential}),signal:controller.signal});
+    clearTimeout(timeout);
+    const raw = await res.text();
+    let data;
+    try { data = raw ? JSON.parse(raw) : {}; }
+    catch { throw new Error(`Server returned invalid JSON (HTTP ${res.status}): ${raw.slice(0,160) || 'empty response'}`); }
+    if (!res.ok || !data.user) throw new Error(data.error||'Google sign-in failed.');
+    await put('users',data.user); S.user=data.user; S.tab='dash'; sessionStorage.setItem('sf_user',JSON.stringify(data.user)); render();
+  } catch (e) {
+    if (/Failed to fetch|NetworkError|Load failed|AbortError|aborted/i.test(e.message||'')) {
+      throw new Error(cfg.url
+        ? `Google account selected, but SizzleFlow could not reach its cloud server at ${cfg.url}. Check your internet connection or contact support.`
+        : 'Google account selected, but SizzleFlow has no cloud server configured. Set SIZZLEFLOW_API_URL in runtime-config.js and rebuild the app.');
+    }
+    throw e;
+  }
 }
 
 /* ---------- shell ---------- */
@@ -149,7 +201,7 @@ const NAV_ICONS = {
 };
 function renderMain(){
   $('#app').innerHTML = `
-  <header class="app-header"><img class="brand-mark" src="images/logo-transparent.png" alt="Sip &amp; Sizzle"><div class="header-user"><button class="profile-trigger" id="profileToggle" aria-label="Open profile menu" aria-expanded="false">${avatarHtml(S.user)}</button><div class="profile-dropdown" id="profileDropdown"><div class="profile-summary"><b>${esc(S.user.full_name)}</b><span>${esc(S.user.username)} - ${esc(S.user.role)}</span></div><button class="profile-option" data-profile>Profile</button><button class="profile-option" data-settings>Settings</button><button class="profile-option logout-option" data-logout>Log out</button></div></div></header>
+  <header class="app-header"><img class="brand-mark" src="images/logo-transparent.png?v=2" alt="Sip &amp; Sizzle"><div class="header-user"><button class="profile-trigger" id="profileToggle" aria-label="Open profile menu" aria-expanded="false">${avatarHtml(S.user)}</button><div class="profile-dropdown" id="profileDropdown"><div class="profile-summary"><b>${esc(S.user.full_name)}</b><span>${esc(S.user.username)} - ${esc(S.user.role)}</span></div><button class="profile-option" data-profile>Profile</button><button class="profile-option" data-settings>Settings</button><button class="profile-option logout-option" data-logout>Log out</button></div></div></header>
   <main id="view"></main>
   <nav class="bottom-nav" aria-label="Main navigation">${TABS.map(([k,l])=>`<button class="bottom-nav-item ${S.tab===k?'on':''}" data-t="${k}" aria-label="${l}" aria-current="${S.tab===k?'page':'false'}">${NAV_ICONS[k]}<span>${l==='New Sale'?'Sale':l}</span></button>`).join('')}</nav>`;
   document.querySelectorAll('.bottom-nav-item').forEach(b=>b.onclick=()=>{S.tab=b.dataset.t; renderMain();});
@@ -295,7 +347,7 @@ function chooseProduct(p){
 }
 function renderSaleLegacy(){
   const list = S.products.filter(p=>!S.cat || p.category_id===S.cat);
-  const lines = Object.values(S.cart).map(line=>`<div class="row"><div>${esc(comboLineName(line))}<div class="muted">${peso(line.unit_price)} each</div></div>
+  const lines = Object.values(S.cart).map(line=>`<div class="row sale-line"><div>${esc(comboLineName(line))}<div class="muted">${peso(line.unit_price)} each</div></div>
       <div class="qty"><button data-m="${line.key}">−</button> ${line.quantity} <button data-a="${line.key}">+</button></div><b>${peso(line.quantity*line.unit_price)}</b></div>`).join('') || '<p class="muted">Tap an item to add it.</p>';
   $('#view').innerHTML = `<div class="chips"><button class="chip ${!S.cat?'on':''}" data-c="0">All</button>
     ${S.cats.map(c=>`<button class="chip ${S.cat===c.id?'on':''}" data-c="${c.id}">${esc(c.name)}</button>`).join('')}</div>
@@ -318,7 +370,7 @@ function renderSaleLegacy(){
 // Mobile sale layout: keep product browsing and checkout on separate screens.
 function renderSale(){
   const list = S.products.filter(p=>!S.cat || p.category_id===S.cat);
-  const lines = Object.values(S.cart).map(line=>`<div class="row"><div>${esc(comboLineName(line))}<div class="muted">${peso(line.unit_price)} each</div></div>
+  const lines = Object.values(S.cart).map(line=>`<div class="row sale-line"><div>${esc(comboLineName(line))}<div class="muted">${peso(line.unit_price)} each</div></div>
     <div class="qty"><button data-m="${line.key}">-</button> ${line.quantity} <button data-a="${line.key}">+</button></div><b>${peso(line.quantity*line.unit_price)}</b></div>`).join('') || '<p class="muted">Tap an item to add it.</p>';
   if (S.saleView === 'order') {
     $('#view').innerHTML = `<div class="sale-order-page"><button class="back-link" id="backToSale">‹ Back to menu</button><div class="card"><h2 style="margin:0 0 4px">Your order</h2><p class="muted" style="margin-top:0">Review the items before completing the sale.</p>${lines}
@@ -479,7 +531,7 @@ async function renderSet(){
   const ps = (await all('sales')).filter(s=>s.sync_status==='pending').length, pe = (await all('expenses')).filter(e=>e.sync_status==='pending').length;
   $('#view').innerHTML = `<div class="card settings-report-card"><h3 style="margin-top:0">Reports</h3><p class="muted">Review sales, expenses, and net income for a selected date range.</p><button class="btn" id="openReport">Open reports</button></div>
     <div class="card"><h3 style="margin-top:0">Server</h3>
-    <input id="su" value="${esc(cfg.url)}" placeholder="http://localhost/SizzleFlow/api"><input id="sk" value="${esc(cfg.key)}" placeholder="API key">
+    <input id="su" value="${esc(cfg.url)}" placeholder="https://api.your-domain.com/SizzleFlow/api"><input id="sk" value="${esc(cfg.key)}" placeholder="API key">
     <button class="btn alt" id="save">Save</button> <div class="muted" style="margin:6px 0">${ps} sale(s) and ${pe} expense(s) waiting to sync.</div>
     <button class="btn alt" id="test">Test server</button><button class="btn" id="sync" style="margin-top:6px">Sync now</button>
     <div id="smsg" class="muted" style="margin-top:8px"></div></div>
@@ -498,7 +550,7 @@ async function renderSet(){
   $('#save').onclick = () => { keep(); $('#smsg').textContent = 'Saved.'; };
   $('#test').onclick = async () => { keep(); $('#smsg').textContent = 'Testing…'; $('#smsg').textContent = (await apiPing()) ? '✅ Server reachable and key accepted.' : '❌ Cannot reach the server, or the API key does not match config.php.'; };
   $('#sync').onclick = async () => { keep(); $('#smsg').textContent = 'Syncing…';
-    try { const r = await syncNow(); $('#smsg').textContent = `✅ Sent ${r.s} sale(s), ${r.e} expense(s).`; setTimeout(renderSet,1500); }
+    try { const r = await syncNow(); $('#smsg').textContent = `✅ Sent ${r.s} sale(s), ${r.e} expense(s). Downloaded ${r.downloadedSales} sale(s), ${r.downloadedExpenses} expense(s).`; }
     catch (e) { $('#smsg').textContent = '❌ ' + e.message; } };
   $('#pair').onclick = async () => {
     try {
@@ -510,30 +562,50 @@ async function renderSet(){
   $('#tp').onclick = () => printReceipt({receipt_no:'TEST-001',sale_date:ymdhms(new Date()),cashier:S.user.full_name,payment_method:'Cash',total_amount:100,items:[{name:'Test item',quantity:2,unit_price:50,subtotal:100}]});
 }
 const hdrs = () => ({'Content-Type':'application/json','X-API-KEY':cfg.key});
-async function apiPing(){ try { return (await fetch(cfg.url+'/ping.php',{headers:hdrs()})).ok; } catch { return false; } }
+async function apiPing(){ if (!cfg.url) return false; try { return (await fetch(cfg.url+'/ping.php',{headers:hdrs()})).ok; } catch { return false; } }
 async function apiCall(file, opt={}){
-  let r; try { r = await fetch(cfg.url+'/'+file,{headers:hdrs(),...opt}); } catch { throw new Error('Cannot reach the server. Check the address and that Apache is running.'); }
+  if (!cfg.url) throw new Error('Cloud server is not configured. Set SIZZLEFLOW_API_URL in runtime-config.js.');
+  let r; try { r = await fetch(cfg.url+'/'+file,{headers:hdrs(),...opt}); } catch { throw new Error('Cannot reach the cloud server. Check your internet connection.'); }
   if (r.status===401) throw new Error('API key rejected. Make sure it matches API_KEY in config.php.');
-  if (!r.ok) throw new Error('Server error ' + r.status);
-  return r.json();
+  const raw = await r.text();
+  let data;
+  try { data = raw ? JSON.parse(raw) : {}; }
+  catch { throw new Error(`Server returned invalid JSON (HTTP ${r.status}): ${raw.slice(0,160) || 'empty response'}`); }
+  if (!r.ok) throw new Error(data.error || 'Server error ' + r.status);
+  return data;
 }
 async function syncNow(){
   const sales = (await all('sales')).filter(s=>s.sync_status==='pending'), exps = (await all('expenses')).filter(e=>e.sync_status==='pending');
   let s=0, e=0;
   if (sales.length || exps.length) {
-    const res = await apiCall('sync_push.php',{method:'POST',body:JSON.stringify({device_id:deviceId(),
-      sales:sales.map(({cashier,...x})=>({...x,items:x.items.map(i=>i)})), expenses:exps})});
+    const res = await apiCall('sync_push.php',{method:'POST',body:JSON.stringify({device_id:deviceId(),user:S.user,
+      sales:sales.map(({cashier,...x})=>({...x,items:x.items.map(i=>i)})),
+      categories:await all('categories'), products:await all('products'), expenses:exps})});
     for (const id of res.synced_sales||[]) { const x = sales.find(a=>a.id===id); x.sync_status='synced'; await put('sales',x); s++; }
     for (const id of res.synced_expenses||[]) { const x = exps.find(a=>a.id===id); x.sync_status='synced'; await put('expenses',x); e++; }
   }
   const c = await apiCall('sync_pull.php');
   const localUsers = await all('users');
   for (const u of c.users||[]) { const local = localUsers.find(x=>String(x.id)===String(u.id))||{}; await put('users',{...local,...u}); }
+  // Download records from other devices. A locally pending record is newer
+  // than its last cloud version, so retain it until its upload succeeds.
+  const localSales = new Map((await all('sales')).map(x=>[String(x.id),x]));
+  for (const sale of c.sales||[]) {
+    const local = localSales.get(String(sale.id));
+    if (local?.sync_status === 'pending') continue;
+    await put('sales',{...local,...sale,items:(sale.items||[]).map(item=>({...item})),sync_status:'synced'});
+  }
+  const localExpenses = new Map((await all('expenses')).map(x=>[String(x.id),x]));
+  for (const expense of c.expenses||[]) {
+    const local = localExpenses.get(String(expense.id));
+    if (local?.sync_status === 'pending') continue;
+    await put('expenses',{...local,...expense,sync_status:'synced'});
+  }
   // The official menu is installed locally from SEED and is the source of truth.
   // Do not let an older server catalog replace it during sync.
   for (const x of c.expense_categories||[]) await put('expense_categories',{id:+x.id,name:x.name});
   await loadCatalog();
-  return {s,e};
+  return {s,e,downloadedSales:(c.sales||[]).length,downloadedExpenses:(c.expenses||[]).length};
 }
 
 /* ---------- receipt + printing ---------- */
@@ -655,8 +727,6 @@ function loadImg(src){ return new Promise(res => { const i = new Image(); i.onlo
 async function receiptCanvas(s){
   const W = 384, pad = 8, fs = 22, lh = 28, font = `bold ${fs}px "Courier New", monospace`;
   const c = document.createElement('canvas'), g = c.getContext('2d'); c.width = W; g.font = font;
-  const logo = await loadImg('images/logo-transparent.png');
-  const logoH = logo ? Math.round(logo.height * (260 / logo.width)) : 0;
   const rows = [];
   const add = (t, al='left') => rows.push({t:String(t==null?'':t), al});
   const pair = (a,b) => rows.push({a:String(a), b:String(b)});
@@ -668,10 +738,9 @@ async function receiptCanvas(s){
   s.items.forEach(i => { wrap(i.name); pair('  '+i.quantity+' x '+plain(i.unit_price), plain(i.subtotal)); });
   add('-'.repeat(30),'center'); pair('TOTAL', plain(s.total_amount)); wrap('Payment: '+s.payment_method);
   add('-'.repeat(30),'center'); add('Thank you!','center'); add(''); add('');
-  c.height = pad + (logo ? logoH + 10 : 0) + rows.length * lh + pad;
+  c.height = pad + rows.length * lh + pad;
   g.fillStyle = '#fff'; g.fillRect(0,0,W,c.height); g.fillStyle = '#000'; g.font = font; g.textBaseline = 'top';
   let y = pad;
-  if (logo) { g.drawImage(logo, (W-260)/2, y, 260, logoH); y += logoH + 10; }
   rows.forEach(r => {
     if (r.a !== undefined) { g.textAlign='left'; g.fillText(r.a, pad, y); g.textAlign='right'; g.fillText(r.b, W-pad, y); }
     else { g.textAlign = r.al; g.fillText(r.t, r.al==='center' ? W/2 : pad, y); }

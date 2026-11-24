@@ -1,116 +1,102 @@
 <?php
-// Receives sales and expenses saved offline on a phone.
-// Every record has a UUID, so sending the same record again only updates it:
-// the server never creates duplicates.
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/supabase.php';
 require_key();
 
 $data = json_decode(file_get_contents('php://input'), true);
-if (!is_array($data)) {
-    json_out(['error' => 'Invalid JSON'], 400);
-}
+if (!is_array($data)) json_out(['error' => 'Invalid JSON'], 400);
 
-$sales    = $data['sales'] ?? [];
+$sales = $data['sales'] ?? [];
 $expenses = $data['expenses'] ?? [];
-
-$pdo = pdo();
-$syncedSales = [];
-$syncedExpenses = [];
+$clientUser = $data['user'] ?? null;
+$categories = $data['categories'] ?? [];
+$products = $data['products'] ?? [];
 
 try {
-    $pdo->beginTransaction();
+    // Resolve the cloud user first. A local account can have an id that is
+    // different from an account previously created by Google/email, so sales
+    // must use the actual Supabase users.id value.
+    if (!is_array($clientUser) || empty($clientUser['id'])) {
+        json_out(['error' => 'Sync requires a signed-in user.'], 400);
+    }
+    $userId = sync_user($clientUser);
 
-    $saleStmt = $pdo->prepare(
-        "INSERT INTO sales (id, receipt_no, user_id, customer_name, device_id, payment_method, total_amount,
-                            sale_date, sync_status, is_deleted, updated_at)
-         VALUES (:id, :receipt_no, :user_id, :customer_name, :device_id, :payment_method, :total_amount,
-                 :sale_date, 'synced', :is_deleted, :updated_at)
-         ON DUPLICATE KEY UPDATE
-            customer_name  = VALUES(customer_name),
-            payment_method = VALUES(payment_method),
-            total_amount   = VALUES(total_amount),
-            is_deleted     = VALUES(is_deleted),
-            updated_at     = VALUES(updated_at),
-            sync_status    = 'synced'"
-    );
+    // Upload catalog rows before sale_items because sale_items.product_id and
+    // products.category_id are foreign keys in Supabase.
+    $categoryRows = array_map(static fn(array $c): array => [
+        'id'=>(int)$c['id'], 'name'=>(string)$c['name']
+    ], array_filter($categories, 'is_array'));
+    if ($categoryRows) supabase_upsert('product_categories', $categoryRows);
+    $productRows = array_map(static fn(array $p): array => [
+        'id'=>(int)$p['id'], 'category_id'=>(int)$p['category_id'], 'name'=>(string)$p['name'],
+        'price'=>$p['price'], 'options_json'=>$p['options_json'] ?? ($p['options'] ?? null),
+        'is_active'=>(bool)($p['is_active'] ?? true)
+    ], array_filter($products, 'is_array'));
+    if ($productRows) supabase_upsert('products', $productRows);
 
-    $itemStmt = $pdo->prepare(
-        "INSERT INTO sale_items (id, sale_id, product_id, item_name, category_id, options_json, quantity, unit_price, subtotal)
-         VALUES (:id, :sale_id, :product_id, :item_name, :category_id, :options_json, :quantity, :unit_price, :subtotal)
-         ON DUPLICATE KEY UPDATE
-            item_name  = VALUES(item_name),
-            category_id = VALUES(category_id),
-            options_json = VALUES(options_json),
-            quantity   = VALUES(quantity),
-            unit_price = VALUES(unit_price),
-            subtotal   = VALUES(subtotal)"
-    );
-
+    $saleRows = [];
+    $itemRows = [];
     foreach ($sales as $s) {
-        $saleStmt->execute([
-            ':id'             => $s['id'],
-            ':receipt_no'     => $s['receipt_no'],
-            ':user_id'        => $s['user_id'],
-            ':customer_name'  => $s['customer_name'] ?? null,
-            ':device_id'      => $s['device_id'],
-            ':payment_method' => $s['payment_method'],
-            ':total_amount'   => $s['total_amount'],
-            ':sale_date'      => $s['sale_date'],
-            ':is_deleted'     => (int)($s['is_deleted'] ?? 0),
-            ':updated_at'     => $s['updated_at'] ?? $s['sale_date'],
-        ]);
+        $saleRows[] = [
+            'id'=>$s['id'], 'receipt_no'=>$s['receipt_no'], 'user_id'=>$userId,
+            'customer_name'=>$s['customer_name'] ?? null, 'device_id'=>$s['device_id'],
+            'payment_method'=>$s['payment_method'], 'total_amount'=>$s['total_amount'],
+            'sale_date'=>$s['sale_date'],
+            'is_deleted'=>(int)($s['is_deleted'] ?? 0), 'updated_at'=>$s['updated_at'] ?? ($s['sale_date'] ?? null)
+        ];
         foreach (($s['items'] ?? []) as $i) {
-            $itemStmt->execute([
-                ':id'         => $i['id'],
-                ':sale_id'    => $i['sale_id'],
-                ':product_id' => (int)$i['product_id'],
-                ':item_name'  => $i['name'] ?? null,
-                ':category_id'=> isset($i['category_id']) ? (int)$i['category_id'] : null,
-                ':options_json' => json_encode($i['options'] ?? null),
-                ':quantity'   => (int)$i['quantity'],
-                ':unit_price' => $i['unit_price'],
-                ':subtotal'   => $i['subtotal'],
-            ]);
+            $itemRows[] = [
+                'id'=>$i['id'], 'sale_id'=>$i['sale_id'], 'product_id'=>(int)$i['product_id'],
+                'item_name'=>$i['name'] ?? null, 'category_id'=>isset($i['category_id']) ? (int)$i['category_id'] : null,
+                'options_json'=>$i['options'] ?? null, 'quantity'=>(int)$i['quantity'],
+                'unit_price'=>$i['unit_price'], 'subtotal'=>$i['subtotal']
+            ];
         }
-        $syncedSales[] = $s['id'];
     }
+    $expenseRows = array_map(static function(array $e) use ($userId): array {
+        return [
+            'id'=>$e['id'], 'user_id'=>$userId, 'category_id'=>(int)$e['category_id'],
+            'description'=>$e['description'], 'amount'=>$e['amount'], 'expense_date'=>$e['expense_date'],
+            'is_deleted'=>(int)($e['is_deleted'] ?? 0),
+            'updated_by'=>$userId, 'updated_at'=>$e['updated_at'] ?? null
+        ];
+    }, $expenses);
 
-    $expStmt = $pdo->prepare(
-        "INSERT INTO expenses (id, user_id, category_id, description, amount, expense_date,
-                               sync_status, is_deleted, updated_by, updated_at)
-         VALUES (:id, :user_id, :category_id, :description, :amount, :expense_date,
-                 'synced', :is_deleted, :updated_by, :updated_at)
-         ON DUPLICATE KEY UPDATE
-            category_id  = VALUES(category_id),
-            description  = VALUES(description),
-            amount       = VALUES(amount),
-            expense_date = VALUES(expense_date),
-            is_deleted   = VALUES(is_deleted),
-            updated_by   = VALUES(updated_by),
-            updated_at   = VALUES(updated_at),
-            sync_status  = 'synced'"
-    );
-
-    foreach ($expenses as $e) {
-        $expStmt->execute([
-            ':id'           => $e['id'],
-            ':user_id'      => $e['user_id'],
-            ':category_id'  => (int)$e['category_id'],
-            ':description'  => $e['description'],
-            ':amount'       => $e['amount'],
-            ':expense_date' => $e['expense_date'],
-            ':is_deleted'   => (int)($e['is_deleted'] ?? 0),
-            ':updated_by'   => $e['updated_by'] ?? $e['user_id'],
-            ':updated_at'   => $e['updated_at'] ?? null,
-        ]);
-        $syncedExpenses[] = $e['id'];
-    }
-
-    $pdo->commit();
-    json_out(['synced_sales' => $syncedSales, 'synced_expenses' => $syncedExpenses]);
+    supabase_upsert('sales', $saleRows);
+    supabase_upsert('sale_items', $itemRows);
+    supabase_upsert('expenses', $expenseRows);
+    json_out(['synced_sales'=>array_column($saleRows, 'id'), 'synced_expenses'=>array_column($expenseRows, 'id')]);
 } catch (Throwable $ex) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
-    }
     json_out(['error' => $ex->getMessage()], 500);
+}
+
+function sync_user(array $clientUser): string {
+    $id = (string)$clientUser['id'];
+    $select = 'id,full_name,username,password_hash,role,is_active,email,google_sub,auth_provider';
+    $isUuid = preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $id);
+    $rows = $isUuid ? supabase_query('users', ['id'=>'eq.' . $id, 'select'=>$select, 'limit'=>'1']) : [];
+    if (!$rows && !empty($clientUser['google_sub'])) {
+        $rows = supabase_query('users', ['google_sub'=>'eq.' . $clientUser['google_sub'], 'select'=>$select, 'limit'=>'1']);
+    }
+    if (!$rows && !empty($clientUser['email'])) {
+        $rows = supabase_query('users', ['email'=>'eq.' . strtolower(trim((string)$clientUser['email'])), 'select'=>$select, 'limit'=>'1']);
+    }
+    if (!$rows && !empty($clientUser['username'])) {
+        $rows = supabase_query('users', ['username'=>'eq.' . $clientUser['username'], 'select'=>$select, 'limit'=>'1']);
+    }
+    if ($rows) return (string)$rows[0]['id'];
+
+    if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $id)) {
+        $id = sprintf('%04x%04x-%04x-%04x-%04x-%04x%04x%04x', random_int(0,65535), random_int(0,65535), random_int(0,65535), random_int(16384,20479), random_int(32768,49151), random_int(0,65535), random_int(0,65535), random_int(0,65535));
+    }
+    $username = (string)($clientUser['username'] ?? ('user_' . substr($id, 0, 8)));
+    $base = substr($username, 0, 42) ?: 'user'; $candidate = $base; $n = 1;
+    while (supabase_query('users', ['username'=>'eq.' . $candidate, 'select'=>'id', 'limit'=>'1'])) $candidate = substr($base, 0, 42) . $n++;
+    supabase_upsert('users', [[
+        'id'=>$id, 'full_name'=>$clientUser['full_name'] ?? $candidate, 'username'=>$candidate,
+        'password_hash'=>$clientUser['password_hash'] ?? '', 'email'=>$clientUser['email'] ?? null,
+        'google_sub'=>$clientUser['google_sub'] ?? null, 'auth_provider'=>$clientUser['auth_provider'] ?? 'password',
+        'role'=>$clientUser['role'] ?? 'staff', 'is_active'=>(bool)($clientUser['is_active'] ?? true)
+    ]]);
+    return $id;
 }
