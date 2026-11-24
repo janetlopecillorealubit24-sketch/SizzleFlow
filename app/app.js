@@ -28,6 +28,41 @@ const S = { user:null, tab:'sale', saleView:'catalog', menuView:'products', menu
 const OFFICIAL_CATALOG_VERSION = 'sip-sizzle-official-v1';
 const GOOGLE_CLIENT_ID = '531466811982-a9llaigspe91paod25s9em9oi9uuk9e4.apps.googleusercontent.com';
 const isNative = () => !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
+let deferredInstallPrompt = null;
+
+function refreshInstallButton(){
+  const button = document.querySelector('#installPwa');
+  if (button) button.hidden = isNative() || !deferredInstallPrompt;
+}
+
+window.addEventListener('beforeinstallprompt', event => {
+  // Keep Chrome's install event so the app can offer an explicit button.
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  refreshInstallButton();
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  refreshInstallButton();
+});
+
+async function installPwa(){
+  if (!deferredInstallPrompt) return;
+  const prompt = deferredInstallPrompt;
+  deferredInstallPrompt = null;
+  refreshInstallButton();
+  await prompt.prompt();
+  await prompt.userChoice;
+}
+
+function registerServiceWorker(){
+  if (!('serviceWorker' in navigator)) return;
+  // InfinityFree may show its browser check before serving sw.js. Retry once
+  // after that check has set its cookie instead of silently losing offline/PWA support.
+  navigator.serviceWorker.register('sw.js').catch(() => {
+    setTimeout(() => navigator.serviceWorker.register('sw.js').catch(() => {}), 2500);
+  });
+}
 
 /* ---------- settings ---------- */
 const cfg = {
@@ -75,7 +110,7 @@ async function init(){
     const saved = sessionStorage.getItem('sf_user');
     if (saved) { S.user = JSON.parse(saved); S.tab = 'dash'; }
     render();
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+    registerServiceWorker();
   } finally {
     const splash = document.querySelector('#splash-screen');
     if (splash) {
@@ -99,6 +134,7 @@ function renderLogin(mode='login'){
     <div class="err" id="err"></div><button class="btn" id="go">${signup?'Create account':'Log in'}</button>
     <div class="auth-divider"><span>or</span></div>
     <div id="googleButton" class="google-button-wrap"></div>
+    <button class="btn alt" id="installPwa" type="button" hidden>Install SizzleFlow app</button>
     <button class="auth-link" id="switchAuth" type="button">${signup?'Already have an account? Log in':'New here? Create an account'}</button>
   </div></div>`;
   const go = async () => {
@@ -125,6 +161,8 @@ function renderLogin(mode='login'){
   $('#pConfirm')?.addEventListener('keydown', e => { if (e.key==='Enter') go(); });
   bindPasswordToggles();
   $('#switchAuth').onclick = () => renderLogin(signup?'login':'signup');
+  $('#installPwa').onclick = installPwa;
+  refreshInstallButton();
   setupGoogleAuth(signup);
 }
 
