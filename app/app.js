@@ -706,9 +706,14 @@ async function bleConnect(forcePick){
   const dev = await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[
     '000018f0-0000-1000-8000-00805f9b34fb','e7810a71-73ae-499d-8c15-faa9aef0c3f2','49535343-fe7d-4ae5-8fa9-9fafd205e455','0000ff00-0000-1000-8000-00805f9b34fb']});
   const server = await dev.gatt.connect();
+  let fallback = null;
   for (const sv of await server.getPrimaryServices())
-    for (const ch of await sv.getCharacteristics())
-      if (ch.properties.write || ch.properties.writeWithoutResponse) { bleChar = ch; return ch; }
+    for (const ch of await sv.getCharacteristics()) {
+      if (!(ch.properties.write || ch.properties.writeWithoutResponse)) continue;
+      if (ch.uuid.toLowerCase() === '0000ff02-0000-1000-8000-00805f9b34fb') { bleChar = ch; return ch; }
+      if (!fallback) fallback = ch;
+    }
+  if (fallback) { bleChar = fallback; return fallback; }
   throw new Error('No writable printer channel found. This printer may be classic Bluetooth: use RawBT.');
 }
 async function blePrintNow(bytes){
