@@ -4,7 +4,14 @@ require_once __DIR__ . '/config.php';
 header('Content-Type: application/json; charset=utf-8');
 
 // Allow the Android app (which runs from http://localhost) to call this server.
-header('Access-Control-Allow-Origin: *');
+// Credentialed requests cannot use a wildcard origin. The app may be served
+// from localhost during development or from an HTTPS deployment in production.
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if ($origin !== '') {
+    header('Access-Control-Allow-Origin: ' . $origin);
+    header('Vary: Origin');
+}
+header('Access-Control-Allow-Credentials: true');
 header('Access-Control-Allow-Headers: Content-Type, X-API-KEY');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') { http_response_code(204); exit; }
@@ -21,6 +28,11 @@ function require_key(): void {
     if (!hash_equals(API_KEY, $key)) {
         json_out(['error' => 'Unauthorized'], 401);
     }
+}
+
+function request_json(): array {
+    $data = json_decode(file_get_contents('php://input'), true);
+    return is_array($data) ? $data : [];
 }
 
 function pdo(): PDO {

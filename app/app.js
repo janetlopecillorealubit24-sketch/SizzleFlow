@@ -109,6 +109,7 @@ async function init(){
     await openDB(); await installOfficialCatalog(); await loadCatalog();
     const saved = sessionStorage.getItem('sf_user');
     if (saved) { S.user = JSON.parse(saved); S.tab = 'dash'; }
+    if (!S.user && cfg.url) { try { const session = await apiCall('auth_session.php',{credentials:'include'}); if (session.user) { S.user=session.user; S.tab='dash'; sessionStorage.setItem('sf_user',JSON.stringify(session.user)); } } catch {} }
     render();
     registerServiceWorker();
   } finally {
@@ -143,19 +144,14 @@ function renderLogin(mode='login'){
       const fullName = $('#fullName').value.trim(), confirm = $('#pConfirm').value;
       if (!fullName || !email || !password) { $('#err').textContent = 'Please complete all fields.'; return; }
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { $('#err').textContent = 'Please enter a valid email address.'; return; }
-      if (password.length < 6) { $('#err').textContent = 'Password must be at least 6 characters.'; return; }
+      if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{6,}/.test(password)) { $('#err').textContent = 'Password needs 6+ characters, uppercase, lowercase, number, and special character.'; return; }
       if (password !== confirm) { $('#err').textContent = 'Passwords do not match.'; return; }
-      const users = await all('users');
-      if (users.some(x=>String(x.email||'').toLowerCase()===email)) { $('#err').textContent = 'That email is already registered.'; return; }
-      const base = (email.split('@')[0].replace(/[^a-z0-9_-]/g,'').slice(0,42) || 'user');
-      let username = base, n = 1;
-      while (users.some(x=>String(x.username).toLowerCase()===username.toLowerCase())) username = `${base}${n++}`;
-      const u = {id:uuid(),full_name:fullName,username,password_hash:await sha256(password),role:'staff',is_active:1,email,auth_provider:'password',created_at:ymdhms(new Date())};
-      await put('users',u); S.user=u; S.tab='dash'; sessionStorage.setItem('sf_user',JSON.stringify(u)); render(); return;
+      try { await apiCall('auth_signup.php',{method:'POST',credentials:'include',body:JSON.stringify({full_name:fullName,email,password})}); renderOtp(email); }
+      catch (e) { $('#err').textContent = e.message; }
+      return;
     }
-    const hash = await sha256(password), u = (await all('users')).find(x=>(String(x.email||'').toLowerCase()===email || String(x.username).toLowerCase()===email) && x.password_hash===hash && +x.is_active!==0);
-    if (!u) { $('#err').textContent = 'Wrong username or password.'; return; }
-    S.user = u; S.tab = 'dash'; sessionStorage.setItem('sf_user', JSON.stringify(u)); render();
+    try { const data=await apiCall('auth_login.php',{method:'POST',credentials:'include',body:JSON.stringify({email,password})}); completeAuth(data.user); }
+    catch (e) { $('#err').textContent = e.message; }
   };
   $('#go').onclick = go; $('#p').onkeydown = e => { if (e.key==='Enter') go(); };
   $('#pConfirm')?.addEventListener('keydown', e => { if (e.key==='Enter') go(); });
@@ -164,6 +160,14 @@ function renderLogin(mode='login'){
   $('#installPwa').onclick = installPwa;
   refreshInstallButton();
   setupGoogleAuth(signup);
+}
+
+function completeAuth(user){ S.user=user; S.tab='dash'; sessionStorage.setItem('sf_user',JSON.stringify(user)); put('users',user).catch(()=>{}); render(); }
+
+function renderOtp(email){
+  $('#app').innerHTML=`<div class="login-page"><div class="login card"><img class="login-logo" src="images/logo-transparent.png?v=3" alt="Sip &amp; Sizzle logo"><p class="muted auth-subtitle">Enter the 6-digit code sent to ${esc(email)}</p><input id="otp" inputmode="numeric" maxlength="6" placeholder="Enter OTP" autocomplete="one-time-code" autofocus><div class="err" id="err"></div><button class="btn" id="verify">Verify email</button><button class="auth-link" id="backLogin" type="button">Back to login</button></div></div>`;
+  $('#verify').onclick=async()=>{ const otp=$('#otp').value.trim(); if(!/^\d{6}$/.test(otp)){ $('#err').textContent='Enter the 6-digit code.'; return; } try { const data=await apiCall('auth_verify_otp.php',{method:'POST',credentials:'include',body:JSON.stringify({email,otp})}); completeAuth(data.user); } catch(e){ $('#err').textContent=e.message; } };
+  $('#otp').onkeydown=e=>{if(e.key==='Enter')$('#verify').click();}; $('#backLogin').onclick=()=>renderLogin('login');
 }
 
 function setupGoogleAuth(signup){
@@ -209,14 +213,14 @@ async function finishGoogleLogin(credential){
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(cfg.url+'/google_auth.php',{method:'POST',headers:hdrs(),body:JSON.stringify({credential}),signal:controller.signal});
+    const res = await fetch(cfg.url+'/google_auth.php',{method:'POST',headers:hdrs(),credentials:'include',body:JSON.stringify({credential}),signal:controller.signal});
     clearTimeout(timeout);
     const raw = await res.text();
     let data;
     try { data = raw ? JSON.parse(raw) : {}; }
     catch { throw new Error(`Server returned invalid JSON (HTTP ${res.status}): ${raw.slice(0,160) || 'empty response'}`); }
     if (!res.ok || !data.user) throw new Error(data.error||'Google sign-in failed.');
-    await put('users',data.user); S.user=data.user; S.tab='dash'; sessionStorage.setItem('sf_user',JSON.stringify(data.user)); render();
+    completeAuth(data.user);
   } catch (e) {
     if (/Failed to fetch|NetworkError|Load failed|AbortError|aborted/i.test(e.message||'')) {
       throw new Error(cfg.url
@@ -248,9 +252,19 @@ function renderMain(){
   profileToggle.onclick = e => { e.stopPropagation(); const open = profileDropdown.classList.toggle('open'); profileToggle.setAttribute('aria-expanded', String(open)); };
   $('#profileDropdown').onclick = e => e.stopPropagation();
   document.addEventListener('click', () => { profileDropdown.classList.remove('open'); profileToggle.setAttribute('aria-expanded','false'); }, {once:true});
-  $('[data-profile]').onclick = () => { S.tab='profile'; renderMain(); };
+  $('[data-profile]').onclick = () => openProfileModal();
   $('[data-settings]').onclick = () => { S.tab='set'; renderMain(); };
-  $('[data-logout]').onclick = () => { S.user=null; S.cart={}; sessionStorage.removeItem('sf_user'); render(); };
+  $('[data-logout]').onclick = async () => { try { await apiCall('auth_logout.php',{method:'POST',credentials:'include'}); } catch {} S.user=null; S.cart={}; sessionStorage.removeItem('sf_user'); render(); };
+}
+
+function openProfileModal(){
+  const googleAccount = S.user.auth_provider === 'google';
+  const modal=document.createElement('div'); modal.className='profile-modal-backdrop'; modal.innerHTML=`<section class="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profileModalTitle"><button class="modal-close" id="profileModalClose" aria-label="Close profile">×</button><h3 id="profileModalTitle">Profile</h3><div class="profile-modal-avatar">${avatarHtml(S.user,'profile-page-avatar')}</div><form id="profileModalForm" class="profile-form"><label>Full name<input value="${esc(S.user.full_name||'')}" readonly></label><label>Email<input type="email" value="${esc(S.user.email||'')}" readonly></label><label>Username<input id="profileUsername" value="${esc(S.user.username||'')}" maxlength="50" autocomplete="username" required></label><div class="profile-modal-actions"><button class="btn" type="submit">Save changes</button><button class="btn alt" type="button" id="profileModalBack">Back</button></div><div class="auth-notice" id="profileNotice" role="alert"></div></form><hr><section class="password-change"><h4>Security</h4>${googleAccount?'<p class="muted">This account uses Google sign-in. Change your password through Google.</p>':`<form id="modalPasswordForm"><div class="password-field"><input id="modalCurrentPassword" type="password" placeholder="Recent password" autocomplete="current-password"><button class="password-toggle" type="button" data-password-toggle="modalCurrentPassword" aria-label="Show recent password">${eyeOffIcon}</button></div><div class="password-field"><input id="modalNewPassword" type="password" placeholder="New password" autocomplete="new-password"><button class="password-toggle" type="button" data-password-toggle="modalNewPassword" aria-label="Show new password">${eyeOffIcon}</button></div><div class="password-field"><input id="modalConfirmPassword" type="password" placeholder="Confirm new password" autocomplete="new-password"><button class="password-toggle" type="button" data-password-toggle="modalConfirmPassword" aria-label="Show confirm new password">${eyeOffIcon}</button></div><div class="auth-notice" id="passwordNotice" role="alert"></div><button class="btn alt" type="submit">Change password</button></form>`}</section></section>`;
+  document.body.appendChild(modal);
+  const close=()=>modal.remove(), notice=(id,msg,ok=false)=>{const n=document.getElementById(id);n.textContent=msg;n.className='auth-notice '+(ok?'success':'');};
+  $('#profileModalClose').onclick=close; $('#profileModalBack').onclick=()=>{close();S.tab='dash';renderMain();}; modal.onclick=e=>{if(e.target===modal)close();}; bindPasswordToggles();
+  $('#profileModalForm').onsubmit=async e=>{e.preventDefault();const username=$('#profileUsername').value.trim();if(!/^[A-Za-z0-9_-]{3,50}$/.test(username)){notice('profileNotice','Username must be 3-50 characters and use only letters, numbers, underscore, or hyphen.');return;}try{const data=await apiCall('auth_profile_update.php',{method:'POST',credentials:'include',body:JSON.stringify({username})});S.user=data.user;sessionStorage.setItem('sf_user',JSON.stringify(S.user));await put('users',S.user);notice('profileNotice','Profile saved successfully.',true);}catch(err){notice('profileNotice',err.message);}};
+  if(!googleAccount) $('#modalPasswordForm').onsubmit=async e=>{e.preventDefault();const current=$('#modalCurrentPassword').value,next=$('#modalNewPassword').value,confirm=$('#modalConfirmPassword').value;if(!current||!next||!confirm){notice('passwordNotice','Please complete all password fields.');return;}if(!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{6,}/.test(next)){notice('passwordNotice','New password needs 6+ characters, uppercase, lowercase, number, and special character.');return;}if(next!==confirm){notice('passwordNotice','New password and confirmation do not match.');return;}try{await apiCall('auth_change_password.php',{method:'POST',credentials:'include',body:JSON.stringify({current_password:current,new_password:next,confirm_password:confirm})});notice('passwordNotice','Password changed successfully.',true);$('#modalPasswordForm').reset();}catch(err){notice('passwordNotice',err.message);}};
 }
 
 function renderProfile(){
@@ -577,7 +591,7 @@ async function renderSet(){
     <select id="pm"><option value="browser">Browser print (any printer / test on laptop)</option>
     <option value="native">Bluetooth thermal printer (Android app)</option>
     <option value="ble">Web Bluetooth (Chrome only, BLE)</option><option value="rawbt">RawBT app (Android)</option></select>
-    <select id="pstyle" style="margin-top:6px"><option value="image">Print as picture (Phomemo / portable printers)</option><option value="text">Print as text (standard ESC/POS receipt printers)</option></select>
+     <select id="pstyle" style="margin-top:6px"><option value="image">Print as picture (required for Phomemo T02)</option><option value="text">Print as text (standard ESC/POS receipt printers)</option></select>
     <button class="btn alt" id="pair">Find &amp; connect Bluetooth printer</button>
     <div id="plist" style="margin-top:6px"></div>
     <button class="btn alt" id="tp" style="margin-top:6px">Print test receipt</button><div id="pmsg" class="muted" style="margin-top:8px"></div></div>`;
@@ -603,7 +617,7 @@ const hdrs = () => ({'Content-Type':'application/json','X-API-KEY':cfg.key});
 async function apiPing(){ if (!cfg.url) return false; try { return (await fetch(cfg.url+'/ping.php',{headers:hdrs()})).ok; } catch { return false; } }
 async function apiCall(file, opt={}){
   if (!cfg.url) throw new Error('Cloud server is not configured. Set SIZZLEFLOW_API_URL in runtime-config.js.');
-  let r; try { r = await fetch(cfg.url+'/'+file,{headers:hdrs(),...opt}); } catch { throw new Error('Cannot reach the cloud server. Check your internet connection.'); }
+  let r; try { r = await fetch(cfg.url+'/'+file,{credentials:'include',headers:hdrs(),...opt}); } catch { throw new Error('Cannot reach the cloud server. Check your internet connection.'); }
   if (r.status===401) throw new Error('API key rejected. Make sure it matches API_KEY in config.php.');
   const raw = await r.text();
   let data;
@@ -659,7 +673,7 @@ const escpos = s => new Uint8Array([0x1b,0x40, ...new TextEncoder().encode(recei
 async function printReceipt(s){
   try {
     if (cfg.printMode==='native') { await nativePrint(s); return; }
-    if (cfg.printMode==='ble') { await blePrint(escpos(s)); return; }
+    if (cfg.printMode==='ble') { await blePrintReceipt(s); return; }
     if (cfg.printMode==='rawbt') {
       let bin=''; escpos(s).forEach(b=>bin+=String.fromCharCode(b));
       location.href = 'intent:base64,' + btoa(bin) + '#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;'; return;
@@ -686,6 +700,23 @@ async function blePrint(bytes){
     ch.properties.writeWithoutResponse ? await ch.writeValueWithoutResponse(part) : await ch.writeValue(part);
     await new Promise(r=>setTimeout(r,30));
   }
+}
+// Phomemo T02 accepts raster image data. Build the same 384-dot receipt image
+// used by the Android printer path, then send GS v 0 raster blocks over BLE.
+async function blePrintReceipt(s){
+  const canvas=await receiptCanvas(s), ctx=canvas.getContext('2d');
+  const pixels=ctx.getImageData(0,0,canvas.width,canvas.height).data;
+  const widthBytes=Math.ceil(canvas.width/8), stream=[0x1b,0x40];
+  for(let y=0;y<canvas.height;y+=100){
+    const height=Math.min(100,canvas.height-y), body=new Uint8Array(height*widthBytes);
+    for(let row=0;row<height;row++) for(let x=0;x<canvas.width;x++){
+      const p=((y+row)*canvas.width+x)*4;
+      if(pixels[p]<128) body[row*widthBytes+(x>>3)]|=0x80>>(x&7);
+    }
+    stream.push(0x1d,0x76,0x30,0x00,widthBytes&255,(widthBytes>>8)&255,height&255,(height>>8)&255,...body);
+  }
+  stream.push(0x1b,0x64,0x03);
+  await blePrint(new Uint8Array(stream));
 }
 
 /* ---------- native Bluetooth printing (Capacitor, Android) ---------- */

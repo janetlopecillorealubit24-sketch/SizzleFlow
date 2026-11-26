@@ -1,6 +1,5 @@
 <?php
-require_once __DIR__ . '/db.php';
-require_once __DIR__ . '/supabase.php';
+require_once __DIR__ . '/auth.php';
 require_key();
 
 $input = json_decode(file_get_contents('php://input'), true) ?: [];
@@ -25,7 +24,7 @@ if ($status !== 200 || !is_array($claims)
 $googleSub = (string)$claims['sub'];
 $email = strtolower(trim((string)($claims['email'] ?? '')));
 $name = trim((string)($claims['name'] ?? $email));
-$select = 'id,full_name,username,password_hash,role,is_active,email,google_sub,auth_provider';
+$select = auth_select();
 $rows = supabase_query('users', ['google_sub' => 'eq.' . $googleSub, 'select' => $select, 'limit' => '1']);
 if (!$rows) $rows = supabase_query('users', ['email' => 'eq.' . $email, 'select' => $select, 'limit' => '1']);
 $user = $rows[0] ?? null;
@@ -39,15 +38,16 @@ if (!$user) {
     $created = supabase_upsert('users', [[
         'id'=>$id, 'full_name'=>$name ?: $username, 'username'=>$username,
         'password_hash'=>bin2hex(random_bytes(32)), 'role'=>'staff', 'is_active'=>true,
-        'email'=>$email, 'google_sub'=>$googleSub, 'auth_provider'=>'google'
+        'email'=>$email, 'google_sub'=>$googleSub, 'auth_provider'=>'google', 'email_verified'=>true
     ]]);
     $user = $created[0] ?? null;
 } else {
     supabase_request('users', 'PATCH', 'id=eq.' . rawurlencode($user['id']), [[
         'google_sub'=>$googleSub, 'email'=>$email, 'auth_provider'=>'google', 'full_name'=>$name ?: $user['full_name']
     ]], 'return=minimal');
-    $user['google_sub'] = $googleSub; $user['email'] = $email; $user['auth_provider'] = 'google'; $user['full_name'] = $name ?: $user['full_name'];
+    $user['google_sub'] = $googleSub; $user['email'] = $email; $user['auth_provider'] = 'google'; $user['full_name'] = $name ?: $user['full_name']; $user['email_verified'] = true;
 }
 
 if (!$user) json_out(['error' => 'Could not create or update the Supabase user.'], 502);
-json_out(['user' => $user]);
+create_session($user);
+json_out(['user' => public_user($user)]);

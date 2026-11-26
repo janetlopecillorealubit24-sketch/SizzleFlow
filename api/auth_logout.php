@@ -1,0 +1,1 @@
+<?php require_once __DIR__ . '/auth.php'; require_key(); $token=$_COOKIE[AUTH_COOKIE_NAME]??''; if($token!=='') supabase_request('auth_sessions','DELETE','token_hash=eq.'.hash('sha256',$token),null,'return=minimal'); clear_auth_cookie(); json_out(['ok'=>true]);

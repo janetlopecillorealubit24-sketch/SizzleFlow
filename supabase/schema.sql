@@ -9,6 +9,7 @@ create table if not exists public.users (
   email varchar(255),
   google_sub varchar(255),
   auth_provider varchar(20) not null default 'password',
+  email_verified boolean not null default false,
   role varchar(20) not null default 'staff',
   is_active boolean not null default true,
   created_at timestamptz not null default now()
@@ -84,6 +85,27 @@ alter table public.users add column if not exists auth_provider varchar(20) not 
 alter table public.users add column if not exists role varchar(20) not null default 'staff';
 alter table public.users add column if not exists is_active boolean not null default true;
 alter table public.users add column if not exists created_at timestamptz not null default now();
+alter table public.users add column if not exists email_verified boolean not null default false;
+
+create table if not exists public.auth_otps (
+  id uuid primary key,
+  user_id uuid not null references public.users(id) on delete cascade,
+  email varchar(255) not null,
+  otp_hash varchar(255) not null,
+  attempts integer not null default 0,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists auth_otps_user_idx on public.auth_otps(user_id, created_at desc);
+
+create table if not exists public.auth_sessions (
+  id uuid primary key,
+  user_id uuid not null references public.users(id) on delete cascade,
+  token_hash varchar(64) not null unique,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists auth_sessions_expiry_idx on public.auth_sessions(expires_at);
 
 alter table public.products add column if not exists options_json jsonb;
 alter table public.products add column if not exists is_active boolean not null default true;

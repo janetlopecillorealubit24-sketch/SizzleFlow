@@ -16,6 +16,10 @@ defined('DB_USER') || define('DB_USER', config_env('DB_USER', 'root'));
 defined('DB_PASS') || define('DB_PASS', config_env('DB_PASS'));
 defined('API_KEY') || define('API_KEY', config_env('API_KEY', 'change-this-secret-key'));
 defined('GOOGLE_CLIENT_ID') || define('GOOGLE_CLIENT_ID', config_env('GOOGLE_CLIENT_ID', '531466811982-a9llaigspe91paod25s9em9oi9uuk9e4.apps.googleusercontent.com'));
+defined('GOOGLE_CLIENT_SECRET') || define('GOOGLE_CLIENT_SECRET', config_env('GOOGLE_CLIENT_SECRET'));
+defined('GMAIL_REFRESH_TOKEN') || define('GMAIL_REFRESH_TOKEN', config_env('GMAIL_REFRESH_TOKEN'));
+defined('GMAIL_SENDER') || define('GMAIL_SENDER', config_env('GMAIL_SENDER'));
+defined('AUTH_COOKIE_NAME') || define('AUTH_COOKIE_NAME', config_env('AUTH_COOKIE_NAME', 'sizzleflow_session'));
 
 if (!defined('SUPABASE_URL') && config_env('SUPABASE_URL') !== '') define('SUPABASE_URL', config_env('SUPABASE_URL'));
 if (!defined('SUPABASE_SERVICE_KEY') && config_env('SUPABASE_SERVICE_KEY') !== '') define('SUPABASE_SERVICE_KEY', config_env('SUPABASE_SERVICE_KEY'));

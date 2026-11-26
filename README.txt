@@ -14,12 +14,14 @@ LOCAL DEVELOPMENT
 CLOUD DEPLOYMENT
 1. Create/configure the Supabase project and run supabase/schema.sql in the
    Supabase SQL Editor.
+   This creates the email verification OTP and HttpOnly session tables.
 2. Deploy the api/ folder to a public HTTPS PHP host (for example
    https://api.example.com/SizzleFlow/api). Apache on a developer laptop is
    not a production backend.
 3. On that host, create api/config.local.php from api/config.local.example.php
-   and fill in the Supabase URL, service-role key, Google client ID and a long
-   random API key.
+   and fill in the Supabase URL, service-role key, Google client ID, a long
+   random API key, and the Gmail API OAuth values. Gmail must be authorized
+   with the gmail.send scope; keep the refresh token on the PHP server.
 4. Set the deployed API URL in app/runtime-config.js and www/runtime-config.js:
    window.SIZZLEFLOW_API_URL = 'https://api.example.com/SizzleFlow/api';
 5. Run `npx cap sync android` and build the Android app. Every installed device

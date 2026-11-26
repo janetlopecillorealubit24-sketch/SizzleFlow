@@ -1,5 +1,5 @@
 // Caches the app files so it opens offline. Bump VERSION after editing files.
-const VERSION='v30', FILES=['./','index.html','style.css','app.js','db.js','manifest.json?v=4','icon.svg','images/logo-transparent.png?v=3','images/logo.jpg?v=3','images/app-icon.png?v=3','images/app-icon-192.png?v=4','images/app-icon-512.png?v=4'];
+const VERSION='v31', FILES=['./','index.html','style.css','app.js','db.js','manifest.json?v=4','icon.svg','images/logo-transparent.png?v=3','images/logo.jpg?v=3','images/app-icon.png?v=3','images/app-icon-192.png?v=4','images/app-icon-512.png?v=4'];
 self.addEventListener('install', event => event.waitUntil((async () => {
   const cache = await caches.open(VERSION);
   // Do not prevent PWA installation if a shared host temporarily blocks one
