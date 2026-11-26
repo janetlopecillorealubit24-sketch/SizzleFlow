@@ -699,6 +699,7 @@ async function printReceipt(s){
   $('#receipt').textContent = receiptText(s); window.print();
 }
 let bleChar = null;
+let blePrintQueue = Promise.resolve();
 async function bleConnect(forcePick){
   if (!navigator.bluetooth) throw new Error('This browser has no Web Bluetooth. Use Chrome on Android or desktop, or choose RawBT.');
   if (bleChar && bleChar.service.device.gatt.connected && !forcePick) return bleChar;
@@ -710,13 +711,18 @@ async function bleConnect(forcePick){
       if (ch.properties.write || ch.properties.writeWithoutResponse) { bleChar = ch; return ch; }
   throw new Error('No writable printer channel found. This printer may be classic Bluetooth: use RawBT.');
 }
-async function blePrint(bytes){
+async function blePrintNow(bytes){
   const ch = await bleConnect(false);
   for (let i=0;i<bytes.length;i+=100) {
     const part = bytes.slice(i,i+100);
     ch.properties.writeWithoutResponse ? await ch.writeValueWithoutResponse(part) : await ch.writeValue(part);
-    await new Promise(r=>setTimeout(r,30));
+    await new Promise(r=>setTimeout(r,80));
   }
+}
+function blePrint(bytes){
+  const job = blePrintQueue.then(() => blePrintNow(bytes));
+  blePrintQueue = job.catch(() => {});
+  return job;
 }
 // Phomemo T02 accepts raster image data. Build the same 384-dot receipt image
 // used by the Android printer path, then send GS v 0 raster blocks over BLE.
