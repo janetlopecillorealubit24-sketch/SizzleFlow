@@ -165,9 +165,19 @@ function renderLogin(mode='login'){
 function completeAuth(user){ S.user=user; S.tab='dash'; sessionStorage.setItem('sf_user',JSON.stringify(user)); put('users',user).catch(()=>{}); render(); }
 
 function renderOtp(email){
-  $('#app').innerHTML=`<div class="login-page"><div class="login card"><img class="login-logo" src="images/logo-transparent.png?v=3" alt="Sip &amp; Sizzle logo"><p class="muted auth-subtitle">Enter the 6-digit code sent to ${esc(email)}</p><input id="otp" inputmode="numeric" maxlength="6" placeholder="Enter OTP" autocomplete="one-time-code" autofocus><div class="err" id="err"></div><button class="btn" id="verify">Verify email</button><button class="auth-link" id="backLogin" type="button">Back to login</button></div></div>`;
-  $('#verify').onclick=async()=>{ const otp=$('#otp').value.trim(); if(!/^\d{6}$/.test(otp)){ $('#err').textContent='Enter the 6-digit code.'; return; } try { const data=await apiCall('auth_verify_otp.php',{method:'POST',credentials:'include',body:JSON.stringify({email,otp})}); completeAuth(data.user); } catch(e){ $('#err').textContent=e.message; } };
-  $('#otp').onkeydown=e=>{if(e.key==='Enter')$('#verify').click();}; $('#backLogin').onclick=()=>renderLogin('login');
+  $('#app').innerHTML=`<div class="login-page"><div class="login card"><img class="login-logo" src="images/logo-transparent.png?v=3" alt="Sip &amp; Sizzle logo"><p class="muted auth-subtitle">Enter the 6-digit code sent to ${esc(email)}</p><input id="otp" inputmode="numeric" maxlength="6" placeholder="Enter OTP" autocomplete="one-time-code" autofocus><div class="err" id="err"></div><button class="btn" id="verify">Verify email</button><button class="auth-link otp-resend" id="resendOtp" type="button" disabled>Resend code in <span id="resendCountdown">60</span>s</button><div class="otp-register-again">Wrong email? <button class="auth-link" id="registerAgain" type="button">Register again</button></div><button class="auth-link" id="backLogin" type="button">Back to login</button></div></div>`;
+  $('#verify').onclick=async()=>{ const otp=$('#otp').value.trim(); $('#err').classList.remove('success'); if(!/^\d{6}$/.test(otp)){ $('#err').textContent='Enter the 6-digit code.'; return; } try { const data=await apiCall('auth_verify_otp.php',{method:'POST',credentials:'include',body:JSON.stringify({email,otp})}); completeAuth(data.user); } catch(e){ $('#err').textContent=e.message; } };
+  let seconds=60, countdownTimer;
+  const startCountdown = (duration=60) => {
+    clearInterval(countdownTimer); seconds=Math.max(1,Number(duration)||60); $('#resendOtp').disabled=true; $('#resendOtp').innerHTML='Resend code in <span id="resendCountdown"></span>s'; $('#resendCountdown').textContent=seconds;
+    countdownTimer=setInterval(()=>{ seconds--; $('#resendCountdown').textContent=Math.max(0,seconds); if(seconds<=0){ clearInterval(countdownTimer); $('#resendOtp').disabled=false; $('#resendOtp').textContent='Resend code'; } },1000);
+  };
+  $('#resendOtp').onclick=async()=>{
+    const button=$('#resendOtp'); button.disabled=true; $('#err').textContent='';
+    try { await apiCall('auth_resend_otp.php',{method:'POST',credentials:'include',body:JSON.stringify({email})}); $('#err').textContent='A new verification code was sent.'; $('#err').classList.add('success'); startCountdown(); }
+    catch(e){ $('#err').textContent=e.message; $('#err').classList.remove('success'); startCountdown(e.retry_after || 60); }
+  };
+  startCountdown(); $('#otp').onkeydown=e=>{if(e.key==='Enter')$('#verify').click();}; $('#registerAgain').onclick=()=>{ clearInterval(countdownTimer); renderLogin('signup'); }; $('#backLogin').onclick=()=>{ clearInterval(countdownTimer); renderLogin('login'); };
 }
 
 function setupGoogleAuth(signup){
@@ -261,9 +271,15 @@ function openProfileModal(){
   const googleAccount = S.user.auth_provider === 'google';
   const modal=document.createElement('div'); modal.className='profile-modal-backdrop'; modal.innerHTML=`<section class="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profileModalTitle"><button class="modal-close" id="profileModalClose" aria-label="Close profile">×</button><h3 id="profileModalTitle">Profile</h3><div class="profile-modal-avatar">${avatarHtml(S.user,'profile-page-avatar')}</div><form id="profileModalForm" class="profile-form"><label>Full name<input value="${esc(S.user.full_name||'')}" readonly></label><label>Email<input type="email" value="${esc(S.user.email||'')}" readonly></label><label>Username<input id="profileUsername" value="${esc(S.user.username||'')}" maxlength="50" autocomplete="username" required></label><div class="profile-modal-actions"><button class="btn" type="submit">Save changes</button><button class="btn alt" type="button" id="profileModalBack">Back</button></div><div class="auth-notice" id="profileNotice" role="alert"></div></form><hr><section class="password-change"><h4>Security</h4>${googleAccount?'<p class="muted">This account uses Google sign-in. Change your password through Google.</p>':`<form id="modalPasswordForm"><div class="password-field"><input id="modalCurrentPassword" type="password" placeholder="Recent password" autocomplete="current-password"><button class="password-toggle" type="button" data-password-toggle="modalCurrentPassword" aria-label="Show recent password">${eyeOffIcon}</button></div><div class="password-field"><input id="modalNewPassword" type="password" placeholder="New password" autocomplete="new-password"><button class="password-toggle" type="button" data-password-toggle="modalNewPassword" aria-label="Show new password">${eyeOffIcon}</button></div><div class="password-field"><input id="modalConfirmPassword" type="password" placeholder="Confirm new password" autocomplete="new-password"><button class="password-toggle" type="button" data-password-toggle="modalConfirmPassword" aria-label="Show confirm new password">${eyeOffIcon}</button></div><div class="auth-notice" id="passwordNotice" role="alert"></div><button class="btn alt" type="submit">Change password</button></form>`}</section></section>`;
   document.body.appendChild(modal);
+  const modalPhotoInput=document.createElement('input'); modalPhotoInput.type='file'; modalPhotoInput.accept='image/*'; modalPhotoInput.hidden=true; modalPhotoInput.id='profileModalPhoto';
+  const photoActions=document.createElement('div'); photoActions.className='profile-photo-actions'; photoActions.innerHTML=`<button class="profile-option" type="button" data-modal-photo-change>Change photo</button><button class="profile-option logout-option" type="button" data-modal-photo-delete ${S.user.profile_photo?'':'disabled'}>Remove photo</button>`;
+  const modalForm=modal.querySelector('#profileModalForm'); modal.querySelector('.profile-modal').insertBefore(modalPhotoInput,modalForm); modal.querySelector('.profile-modal').insertBefore(photoActions,modalForm);
   const close=()=>modal.remove(), notice=(id,msg,ok=false)=>{const n=document.getElementById(id);n.textContent=msg;n.className='auth-notice '+(ok?'success':'');};
   $('#profileModalClose').onclick=close; $('#profileModalBack').onclick=()=>{close();S.tab='dash';renderMain();}; modal.onclick=e=>{if(e.target===modal)close();}; bindPasswordToggles();
-  $('#profileModalForm').onsubmit=async e=>{e.preventDefault();const username=$('#profileUsername').value.trim();if(!/^[A-Za-z0-9_-]{3,50}$/.test(username)){notice('profileNotice','Username must be 3-50 characters and use only letters, numbers, underscore, or hyphen.');return;}try{const data=await apiCall('auth_profile_update.php',{method:'POST',credentials:'include',body:JSON.stringify({username})});S.user=data.user;sessionStorage.setItem('sf_user',JSON.stringify(S.user));await put('users',S.user);notice('profileNotice','Profile saved successfully.',true);}catch(err){notice('profileNotice',err.message);}};
+  const saveModalPhoto=async file=>{if(!file)return;S.user={...S.user,profile_photo:await readPhoto(file),updated_at:ymdhms(new Date())};await put('users',S.user);sessionStorage.setItem('sf_user',JSON.stringify(S.user));modal.querySelector('.profile-modal-avatar').innerHTML=avatarHtml(S.user,'profile-page-avatar');photoActions.querySelector('[data-modal-photo-delete]').disabled=false;};
+  photoActions.querySelector('[data-modal-photo-change]').onclick=()=>modalPhotoInput.click(); modalPhotoInput.onchange=()=>saveModalPhoto(modalPhotoInput.files[0]);
+  photoActions.querySelector('[data-modal-photo-delete]').onclick=async()=>{S.user={...S.user,profile_photo:'',updated_at:ymdhms(new Date())};await put('users',S.user);sessionStorage.setItem('sf_user',JSON.stringify(S.user));modal.querySelector('.profile-modal-avatar').innerHTML=avatarHtml(S.user,'profile-page-avatar');photoActions.querySelector('[data-modal-photo-delete]').disabled=true;};
+  $('#profileModalForm').onsubmit=async e=>{e.preventDefault();const username=$('#profileUsername').value.trim();if(!/^[A-Za-z0-9_-]{3,50}$/.test(username)){notice('profileNotice','Username must be 3-50 characters and use only letters, numbers, underscore, or hyphen.');return;}try{const data=await apiCall('auth_profile_update.php',{method:'POST',credentials:'include',body:JSON.stringify({username})});S.user={...data.user,profile_photo:S.user.profile_photo||''};sessionStorage.setItem('sf_user',JSON.stringify(S.user));await put('users',S.user);notice('profileNotice','Profile saved successfully.',true);}catch(err){notice('profileNotice',err.message);}};
   if(!googleAccount) $('#modalPasswordForm').onsubmit=async e=>{e.preventDefault();const current=$('#modalCurrentPassword').value,next=$('#modalNewPassword').value,confirm=$('#modalConfirmPassword').value;if(!current||!next||!confirm){notice('passwordNotice','Please complete all password fields.');return;}if(!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{6,}/.test(next)){notice('passwordNotice','New password needs 6+ characters, uppercase, lowercase, number, and special character.');return;}if(next!==confirm){notice('passwordNotice','New password and confirmation do not match.');return;}try{await apiCall('auth_change_password.php',{method:'POST',credentials:'include',body:JSON.stringify({current_password:current,new_password:next,confirm_password:confirm})});notice('passwordNotice','Password changed successfully.',true);$('#modalPasswordForm').reset();}catch(err){notice('passwordNotice',err.message);}};
 }
 
@@ -282,6 +298,7 @@ function renderProfile(){
 
 /* ---------- menu management ---------- */
 function menuPhoto(p){ return p.photo ? `<img class="prod-photo" src="${p.photo}" alt="">` : '<div class="prod-photo empty-photo">No photo</div>'; }
+function saleProductTile(p){ const price=p.options?.sizes?`${peso(p.options.sizes[0].price)} - ${peso(p.options.sizes.at(-1).price)}`:peso(p.price); return `<button class="prod" data-product="${p.id}">${p.photo?`<img class="prod-photo" src="${p.photo}" alt="">`:''}<span class="prod-info"><b>${esc(p.name)}</b><span>${price}</span></span></button>`; }
 function readPhoto(file){ return new Promise((resolve,reject)=>{ if(!file){resolve('');return;} const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(file); }); }
 async function renderMenuLegacy(){
   const editId = S.menuEdit || '';
@@ -403,7 +420,7 @@ function renderSaleLegacy(){
       <div class="qty"><button data-m="${line.key}">−</button> ${line.quantity} <button data-a="${line.key}">+</button></div><b>${peso(line.quantity*line.unit_price)}</b></div>`).join('') || '<p class="muted">Tap an item to add it.</p>';
   $('#view').innerHTML = `<div class="chips"><button class="chip ${!S.cat?'on':''}" data-c="0">All</button>
     ${S.cats.map(c=>`<button class="chip ${S.cat===c.id?'on':''}" data-c="${c.id}">${esc(c.name)}</button>`).join('')}</div>
-  <div class="grid">${list.map(p=>`<button class="prod" data-product="${p.id}">${p.photo?`<img class="prod-photo" src="${p.photo}" alt="">`:''}<b>${esc(p.name)}</b><span>${p.options?.sizes?`${peso(p.options.sizes[0].price)} – ${peso(p.options.sizes.at(-1).price)}`:peso(p.price)}</span></button>`).join('')}</div>
+  <div class="grid">${list.map(saleProductTile).join('')}</div>
   <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Order</h3><input id="customerName" placeholder="Customer name (optional)" value="${esc(S.customerName)}">${lines}
     <div class="total"><span>Total</span><span>${peso(cartTotal())}</span></div>
     <div class="pay">${['Cash','GCash'].map(m=>`<button class="btn ${S.pay===m?'':'alt'}" data-p="${m}">${m}</button>`).join('')}</div>
@@ -435,7 +452,7 @@ function renderSale(){
     $('#view').innerHTML = `<div class="sale-catalog"><div class="sale-heading"><div><h2>New sale</h2><p class="muted">Tap a product to add it to the order.</p></div></div>
       <div class="chips"><button class="chip ${!S.cat?'on':''}" data-c="0">All</button>
         ${S.cats.map(c=>`<button class="chip ${S.cat===c.id?'on':''}" data-c="${c.id}">${esc(c.name)}</button>`).join('')}</div>
-      <div class="grid">${list.map(p=>`<button class="prod" data-product="${p.id}">${p.photo?`<img class="prod-photo" src="${p.photo}" alt="">`:''}<b>${esc(p.name)}</b><span>${p.options?.sizes?`${peso(p.options.sizes[0].price)} - ${peso(p.options.sizes.at(-1).price)}`:peso(p.price)}</span></button>`).join('')}</div>
+      <div class="grid">${list.map(saleProductTile).join('')}</div>
       ${Object.keys(S.cart).length ? `<div class="cart-summary-bar"><div><b>${Object.values(S.cart).reduce((n,line)=>n+line.quantity,0)} item(s)</b><span>${peso(cartTotal())}</span></div><button class="btn" id="viewOrder">View order</button></div>` : '<div class="empty-cart-hint">Your order is empty. Tap a product to begin.</div>'}</div>`;
   }
   const v = $('#view');
@@ -623,7 +640,7 @@ async function apiCall(file, opt={}){
   let data;
   try { data = raw ? JSON.parse(raw) : {}; }
   catch { throw new Error(`Server returned invalid JSON (HTTP ${r.status}): ${raw.slice(0,160) || 'empty response'}`); }
-  if (!r.ok) throw new Error(data.error || 'Server error ' + r.status);
+  if (!r.ok) { const error = new Error(data.error || 'Server error ' + r.status); if (data.retry_after) error.retry_after = data.retry_after; throw error; }
   return data;
 }
 async function syncNow(){
